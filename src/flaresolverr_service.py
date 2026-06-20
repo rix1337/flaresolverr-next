@@ -1,4 +1,5 @@
 import logging
+import os
 import platform
 import sys
 import time
@@ -21,6 +22,12 @@ from dtos import (STATUS_ERROR, STATUS_OK, ChallengeResolutionResultT,
                   ChallengeResolutionT, HealthResponse, IndexResponse,
                   V1RequestBase, V1ResponseBase)
 from sessions import SessionsStorage
+
+# flaresolverr-next: max seconds an executeJs script may run before it is abandoned.
+try:
+    EXECUTE_JS_TIMEOUT = int(os.environ.get('EXECUTE_JS_TIMEOUT', '10'))
+except ValueError:
+    EXECUTE_JS_TIMEOUT = 10
 
 ACCESS_DENIED_TITLES = [
     # Cloudflare
@@ -482,8 +489,33 @@ def _evil_logic(req: V1RequestBase, driver: WebDriver, method: str) -> Challenge
     if req.returnScreenshot:
         challenge_res.screenshot = driver.get_screenshot_as_base64()
 
+    if req.executeJs:
+        challenge_res.executeJsResult = _execute_js(driver, req.executeJs)
+
     res.result = challenge_res
     return res
+
+
+def _execute_js(driver: WebDriver, script: str) -> str:
+    """flaresolverr-next: run user-supplied JS on the solved page and return its result
+    as a string. The script may `return` a value or a Promise (awaited). Runs via
+    execute_async_script and is bounded by EXECUTE_JS_TIMEOUT seconds so a hung script
+    cannot block the response."""
+    wrapper = (
+        "var __done = arguments[arguments.length - 1];"
+        "try {"
+        "  Promise.resolve((function(){ " + script + " \n})())"
+        "    .then(function(r){ __done(r === undefined ? null : r); })"
+        "    .catch(function(e){ __done('EXECUTE_JS_ERROR: ' + ((e && e.message) ? e.message : e)); });"
+        "} catch (e) { __done('EXECUTE_JS_ERROR: ' + ((e && e.message) ? e.message : e)); }"
+    )
+    try:
+        driver.set_script_timeout(EXECUTE_JS_TIMEOUT)
+        result = driver.execute_async_script(wrapper)
+        return str(result) if result is not None else ""
+    except Exception as e:
+        logging.warning("executeJs failed: " + str(e))
+        return "EXECUTE_JS_ERROR: " + str(e)
 
 
 def _post_request(req: V1RequestBase, driver: WebDriver):
