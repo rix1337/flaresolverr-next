@@ -141,6 +141,13 @@ def get_webdriver(proxy: dict = None) -> WebDriver:
     # todo: this param shows a warning in chrome head-full
     options.add_argument('--disable-setuid-sandbox')
     options.add_argument('--disable-dev-shm-usage')
+    # flaresolverr-next: keep timers, web workers and the renderer running at full speed
+    # even when the tab is not focused/foreground. Without this Chrome throttles
+    # background timers/workers, which starves in-page work started via executeJs
+    # (e.g. a proof-of-work web worker) so it never finishes in time.
+    options.add_argument('--disable-background-timer-throttling')
+    options.add_argument('--disable-backgrounding-occluded-windows')
+    options.add_argument('--disable-renderer-backgrounding')
     # this option removes the zygote sandbox (it seems that the resolution is a bit faster)
     options.add_argument('--no-zygote')
     # attempt to fix Docker ARM32 build

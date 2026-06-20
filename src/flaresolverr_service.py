@@ -25,7 +25,7 @@ from sessions import SessionsStorage
 
 # flaresolverr-next: max seconds an executeJs script may run before it is abandoned.
 try:
-    EXECUTE_JS_TIMEOUT = int(os.environ.get('EXECUTE_JS_TIMEOUT', '10'))
+    EXECUTE_JS_TIMEOUT = int(os.environ.get('EXECUTE_JS_TIMEOUT', '20'))
 except ValueError:
     EXECUTE_JS_TIMEOUT = 10
 
