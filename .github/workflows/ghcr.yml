@@ -1,0 +1,130 @@
+name: GHCR
+
+# Fork-specific: build the flaresolverr-next image (FlareSolverr + executeJs) and
+# publish it to GHCR on every push to master. Kept separate from upstream's release
+# workflows so it survives rebases onto upstream.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+env:
+  IMAGE_NAME: ghcr.io/rix1337/flaresolverr-next
+  DESCRIPTION: FlareSolverr fork adding the executeJs feature (run JS on the solved page)
+
+jobs:
+  version:
+    name: Get Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      channel: ${{ steps.version.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Get version
+        id: version
+        run: |
+          VERSION="$(git describe --tags --always)"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "channel=latest" >> "$GITHUB_OUTPUT"
+          echo "Version: ${VERSION}"
+
+  build-docker-amd64:
+    name: Build Docker (AMD64)
+    runs-on: ubuntu-latest
+    needs: version
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          annotations: |
+            org.opencontainers.image.description=${{ env.DESCRIPTION }}
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ needs.version.outputs.version }}-amd64
+            ${{ env.IMAGE_NAME }}:${{ needs.version.outputs.channel }}-amd64
+          cache-from: type=gha,scope=amd64
+          cache-to: type=gha,mode=max,scope=amd64
+
+  build-docker-arm64:
+    name: Build Docker (ARM64)
+    runs-on: ubuntu-24.04-arm
+    needs: version
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          provenance: false
+          sbom: false
+          annotations: |
+            org.opencontainers.image.description=${{ env.DESCRIPTION }}
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ needs.version.outputs.version }}-arm64
+            ${{ env.IMAGE_NAME }}:${{ needs.version.outputs.channel }}-arm64
+          cache-from: type=gha,scope=arm64
+          cache-to: type=gha,mode=max,scope=arm64
+
+  merge-docker-manifest:
+    name: Merge Docker Manifests
+    runs-on: ubuntu-latest
+    needs: [version, build-docker-amd64, build-docker-arm64]
+    permissions:
+      packages: write
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create and push manifests
+        run: |
+          ANNOTATION="index:org.opencontainers.image.description=${DESCRIPTION}"
+          docker buildx imagetools create \
+            -t "${IMAGE_NAME}:${{ needs.version.outputs.version }}" \
+            --annotation "$ANNOTATION" \
+            "${IMAGE_NAME}:${{ needs.version.outputs.version }}-amd64" \
+            "${IMAGE_NAME}:${{ needs.version.outputs.version }}-arm64"
+          docker buildx imagetools create \
+            -t "${IMAGE_NAME}:${{ needs.version.outputs.channel }}" \
+            --annotation "$ANNOTATION" \
+            "${IMAGE_NAME}:${{ needs.version.outputs.channel }}-amd64" \
+            "${IMAGE_NAME}:${{ needs.version.outputs.channel }}-arm64"
