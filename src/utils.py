@@ -141,13 +141,12 @@ def get_webdriver(proxy: dict = None) -> WebDriver:
     # todo: this param shows a warning in chrome head-full
     options.add_argument('--disable-setuid-sandbox')
     options.add_argument('--disable-dev-shm-usage')
-    # flaresolverr-next: keep timers, web workers and the renderer running at full speed
-    # even when the tab is not focused/foreground. Without this Chrome throttles
-    # background timers/workers, which starves in-page work started via executeJs
-    # (e.g. a proof-of-work web worker) so it never finishes in time.
-    options.add_argument('--disable-background-timer-throttling')
-    options.add_argument('--disable-backgrounding-occluded-windows')
-    options.add_argument('--disable-renderer-backgrounding')
+    # flaresolverr-next: disable V8's Maglev mid-tier JIT. Since ~Chrome 138 Maglev
+    # runs some integer/typed-array-heavy web worker code (e.g. a filecrypt
+    # proof-of-work SHA-1 hashing loop driven via executeJs) ~40x slower than the
+    # TurboFan tier, so an in-page PoW worker never finishes in time. Chromium 136
+    # (no Maglev default) is unaffected; --no-maglev restores full speed on 138+.
+    options.add_argument('--js-flags=--no-maglev')
     # this option removes the zygote sandbox (it seems that the resolution is a bit faster)
     options.add_argument('--no-zygote')
     # attempt to fix Docker ARM32 build
