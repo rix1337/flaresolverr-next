@@ -28,8 +28,16 @@ WORKDIR /app
 RUN dpkg -i /libgl1-mesa-dri.deb \
     && dpkg -i /adwaita-icon-theme.deb \
     # Install dependencies
+    # Pin chromium to the bookworm/main build. The bookworm-security channel bumped
+    # to 150.x, which fails to start under undetected_chromedriver in this container
+    # ("session not created: cannot connect to chrome"); 147.x is the last known-good
+    # that launches. Check available versions with: apt-cache madison chromium
     && apt-get update \
-    && apt-get install -y --no-install-recommends chromium chromium-common chromium-driver xvfb dumb-init \
+    && apt-get install -y --no-install-recommends --allow-downgrades \
+        chromium=147.0.7727.137-1~deb12u1 \
+        chromium-common=147.0.7727.137-1~deb12u1 \
+        chromium-driver=147.0.7727.137-1~deb12u1 \
+        xvfb dumb-init \
         procps curl vim xauth \
     # Remove temporary files and hardware decoding libraries
     && rm -rf /var/lib/apt/lists/* \
