@@ -36,9 +36,9 @@ except ValueError:
 # run tens of seconds (an escalated difficulty-20 challenge), whereas a plain
 # executeJs script is expected to return quickly.
 try:
-    TRUSTED_CLICK_TIMEOUT = int(os.environ.get('TRUSTED_CLICK_TIMEOUT', '90'))
+    TRUSTED_CLICK_TIMEOUT = int(os.environ.get('TRUSTED_CLICK_TIMEOUT', '100'))
 except ValueError:
-    TRUSTED_CLICK_TIMEOUT = 90
+    TRUSTED_CLICK_TIMEOUT = 100
 
 ACCESS_DENIED_TITLES = [
     # Cloudflare
@@ -114,12 +114,14 @@ def health_endpoint() -> HealthResponse:
 
 
 def _redact_for_log(obj):
-    """Recursively replace bulky executeJs/executeJsResult string values with a
+    """Recursively replace bulky JavaScript request/result string values with a
     short size placeholder so request/response logs don't dump the whole script or
     the returned page HTML."""
     if isinstance(obj, dict):
         return {
-            k: (f"<{len(v)} chars>" if k in ('executeJs', 'executeJsResult') and isinstance(v, str)
+            k: (f"<{len(v)} chars>" if k in (
+                'executeJs', 'executeJsResult', 'documentStartJs'
+            ) and isinstance(v, str)
                 else _redact_for_log(v))
             for k, v in obj.items()
         }
@@ -262,6 +264,8 @@ def _cmd_sessions_destroy(req: V1RequestBase) -> V1ResponseBase:
 def _resolve_challenge(req: V1RequestBase, method: str) -> ChallengeResolutionT:
     timeout = int(req.maxTimeout) / 1000
     driver = None
+    script_identifier = None
+    request_timed_out = False
     try:
         if req.session:
             session_id = req.session
@@ -278,17 +282,52 @@ def _resolve_challenge(req: V1RequestBase, method: str) -> ChallengeResolutionT:
         else:
             driver = utils.get_webdriver(req.proxy)
             logging.debug('New instance of webdriver has been created to perform the request')
-        return func_timeout(timeout, _evil_logic, (req, driver, method))
+        try:
+            script_identifier = _install_document_start_js(
+                req,
+                driver,
+                skip_data_documents=(method == "POST"),
+            )
+        except Exception:
+            if req.session and req.documentStartJs:
+                SESSIONS_STORAGE.destroy(req.session)
+            raise
+        return func_timeout(
+            timeout,
+            _evil_logic_request,
+            (
+                req,
+                driver,
+                method,
+                "installed" if script_identifier is not None else None,
+            ),
+        )
     except FunctionTimedOut:
+        request_timed_out = True
         raise Exception(f'Error solving the challenge. Timeout after {timeout} seconds.')
     except Exception as e:
         raise Exception('Error solving the challenge. ' + str(e).replace('\n', '\\n'))
     finally:
-        if not req.session and driver is not None:
-            if utils.PLATFORM_VERSION == "nt":
-                driver.close()
-            driver.quit()
-            logging.debug('A used instance of webdriver has been destroyed')
+        try:
+            if script_identifier is not None:
+                if request_timed_out and req.session:
+                    # func_timeout cannot guarantee its worker has stopped before it
+                    # returns. Never expose that browser to another retained-session
+                    # request while the old worker may still be unwinding.
+                    SESSIONS_STORAGE.destroy(req.session)
+                else:
+                    try:
+                        _remove_document_start_js(driver, script_identifier)
+                    except Exception:
+                        if req.session:
+                            SESSIONS_STORAGE.destroy(req.session)
+                        raise
+        finally:
+            if not req.session and driver is not None:
+                if utils.PLATFORM_VERSION == "nt":
+                    driver.close()
+                driver.quit()
+                logging.debug('A used instance of webdriver has been destroyed')
 
 
 def click_verify(driver: WebDriver, num_tabs: int = 1):
@@ -367,6 +406,40 @@ def _resolve_turnstile_captcha(req: V1RequestBase, driver: WebDriver):
     return turnstile_token
 
 def _evil_logic(req: V1RequestBase, driver: WebDriver, method: str) -> ChallengeResolutionT:
+    """Run request directly with request-scoped document-start cleanup.
+
+    Timed controller requests install and remove the script in
+    ``_resolve_challenge`` so cleanup cannot be stranded in the timed worker.
+    """
+    script_identifier = _install_document_start_js(
+        req,
+        driver,
+        skip_data_documents=(method == "POST"),
+    )
+    try:
+        return _evil_logic_request(
+            req,
+            driver,
+            method,
+            document_start_js_result=(
+                "installed" if script_identifier is not None else None
+            ),
+        )
+    finally:
+        try:
+            _remove_document_start_js(driver, script_identifier)
+        except Exception:
+            if req.session:
+                SESSIONS_STORAGE.destroy(req.session)
+            raise
+
+
+def _evil_logic_request(
+    req: V1RequestBase,
+    driver: WebDriver,
+    method: str,
+    document_start_js_result: str | None,
+) -> ChallengeResolutionT:
     res = ChallengeResolutionT({})
     res.status = STATUS_OK
     res.message = ""
@@ -502,6 +575,7 @@ def _evil_logic(req: V1RequestBase, driver: WebDriver, method: str) -> Challenge
     challenge_res.cookies = driver.get_cookies()
     challenge_res.userAgent = utils.get_user_agent(driver)
     challenge_res.turnstile_token = turnstile_token
+    challenge_res.documentStartJsResult = document_start_js_result
 
     if not req.returnOnlyCookies:
         challenge_res.headers = {}  # todo: fix, selenium not provides this info
@@ -527,6 +601,51 @@ def _evil_logic(req: V1RequestBase, driver: WebDriver, method: str) -> Challenge
 
     res.result = challenge_res
     return res
+
+
+def _install_document_start_js(
+    req: V1RequestBase,
+    driver: WebDriver,
+    skip_data_documents: bool = False,
+) -> str | None:
+    """Register caller JavaScript before any requested-page navigation."""
+    if not req.documentStartJs:
+        return None
+
+    source = req.documentStartJs
+    if skip_data_documents:
+        source = (
+            "if (window.location.protocol !== 'data:') {\n"
+            f"{source}\n"
+            "}"
+        )
+
+    try:
+        result = driver.execute_cdp_cmd(
+            'Page.addScriptToEvaluateOnNewDocument',
+            {'source': source},
+        )
+    except Exception as e:
+        raise Exception(f'documentStartJs installation failed: {e}') from e
+
+    identifier = result.get('identifier') if isinstance(result, dict) else None
+    if not identifier:
+        raise Exception('documentStartJs installation failed: CDP returned no identifier')
+    return identifier
+
+
+def _remove_document_start_js(driver: WebDriver, identifier: str | None) -> None:
+    """Remove a request-scoped document-start script from a retained browser."""
+    if identifier is None:
+        return
+
+    try:
+        driver.execute_cdp_cmd(
+            'Page.removeScriptToEvaluateOnNewDocument',
+            {'identifier': identifier},
+        )
+    except Exception as e:
+        raise Exception(f'documentStartJs cleanup failed: {e}') from e
 
 
 def _execute_js(driver: WebDriver, script: str) -> str:
