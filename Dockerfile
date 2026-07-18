@@ -28,10 +28,17 @@ WORKDIR /app
 RUN dpkg -i /libgl1-mesa-dri.deb \
     && dpkg -i /adwaita-icon-theme.deb \
     # Install dependencies
-    # Pin chromium to the bookworm/main build. The bookworm-security channel bumped
-    # to 150.x, which fails to start under undetected_chromedriver in this container
-    # ("session not created: cannot connect to chrome"); 147.x is the last known-good
-    # that launches. Check available versions with: apt-cache madison chromium
+    # Pin chromium to the bookworm/main 147.x build. The bookworm-security channel
+    # bumped to 150.x, which fails to start under undetected_chromedriver in this
+    # container ("session not created: cannot connect to chrome"); 147.x is the last
+    # known-good that launches. Debian's live mirrors keep only the newest patch, so
+    # once 147.0.7727.137 rolled out of bookworm/main the pinned version 404'd and the
+    # build broke. Serve apt from a snapshot.debian.org timestamp where 147.x is still
+    # current so the pin stays reproducible. Bump the timestamp only together with a
+    # verified-good chromium version. Check available versions with: apt-cache madison chromium
+    && SNAPSHOT=20260707T000000Z \
+    && rm -f /etc/apt/sources.list.d/debian.sources \
+    && printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/%s/ bookworm main\ndeb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/%s/ bookworm-security main\ndeb [check-valid-until=no] https://snapshot.debian.org/archive/debian/%s/ bookworm-updates main\n' "$SNAPSHOT" "$SNAPSHOT" "$SNAPSHOT" > /etc/apt/sources.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends --allow-downgrades \
         chromium=147.0.7727.137-1~deb12u1 \
