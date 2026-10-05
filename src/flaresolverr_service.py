@@ -71,7 +71,6 @@ TURNSTILE_SELECTORS = [
     "input[name='cf-turnstile-response']"
 ]
 
-SHORT_TIMEOUT = 1
 SESSIONS_STORAGE = SessionsStorage()
 
 
@@ -377,10 +376,16 @@ def _get_turnstile_token(driver: WebDriver, tabs: int):
 
         # reset focus
         driver.execute_script("""
+            let old = document.getElementById('__focus_helper');
+            if (old) old.remove();
+
             let el = document.createElement('button');
-            el.style.position='fixed';
-            el.style.top='0';
-            el.style.left='0';
+            el.id = '__focus_helper';
+            el.style.position = 'fixed';
+            el.style.top = '0';
+            el.style.left = '0';
+            el.style.opacity = '0.01';
+            el.style.pointerEvents = 'none';
             document.body.prepend(el);
             el.focus();
         """)
@@ -528,6 +533,7 @@ def _evil_logic_request(
                 logging.info("Challenge detected. Selector found: " + selector)
                 break
 
+    browser_wait_timeout = utils.get_config_browser_wait_timeout()
     attempt = 0
     if challenge_found:
         while True:
@@ -536,12 +542,12 @@ def _evil_logic_request(
                 # wait until the title changes
                 for title in CHALLENGE_TITLES:
                     logging.debug("Waiting for title (attempt " + str(attempt) + "): " + title)
-                    WebDriverWait(driver, SHORT_TIMEOUT).until_not(title_is(title))
+                    WebDriverWait(driver, browser_wait_timeout).until_not(title_is(title))
 
                 # then wait until all the selectors disappear
                 for selector in CHALLENGE_SELECTORS:
                     logging.debug("Waiting for selector (attempt " + str(attempt) + "): " + selector)
-                    WebDriverWait(driver, SHORT_TIMEOUT).until_not(
+                    WebDriverWait(driver, browser_wait_timeout).until_not(
                         presence_of_element_located((By.CSS_SELECTOR, selector)))
 
                 # all elements not found
@@ -559,7 +565,7 @@ def _evil_logic_request(
         logging.debug("Waiting for redirect")
         # noinspection PyBroadException
         try:
-            WebDriverWait(driver, SHORT_TIMEOUT).until(staleness_of(html_element))
+            WebDriverWait(driver, browser_wait_timeout).until(staleness_of(html_element))
         except Exception:
             logging.debug("Timeout waiting for redirect")
 
@@ -572,7 +578,6 @@ def _evil_logic_request(
     challenge_res = ChallengeResolutionResultT({})
     challenge_res.url = driver.current_url
     challenge_res.status = 200  # todo: fix, selenium not provides this info
-    challenge_res.cookies = driver.get_cookies()
     challenge_res.userAgent = utils.get_user_agent(driver)
     challenge_res.turnstile_token = turnstile_token
     challenge_res.documentStartJsResult = document_start_js_result
@@ -594,10 +599,9 @@ def _evil_logic_request(
             challenge_res.executeJsResult = _execute_js_trusted_click(driver, req.executeJs)
         else:
             challenge_res.executeJsResult = _execute_js(driver, req.executeJs)
-        # executeJs may set or refresh cookies (e.g. completing an in-page step).
-        # The cookie jar captured above is now stale, so re-snapshot it; otherwise
-        # a caller that re-fetches with the returned cookies sees the pre-action page.
-        challenge_res.cookies = driver.get_cookies()
+
+    # Capture cookies after all waits and optional JavaScript actions.
+    challenge_res.cookies = driver.get_cookies()
 
     res.result = challenge_res
     return res
@@ -720,7 +724,8 @@ def _execute_js_trusted_click(driver: WebDriver, script: str) -> str:
     ``window.__FRS_AWAIT`` (a Promise resolved when the in-page action completes),
     and returns ``{"trustedClick":{"x":<cssPx>,"y":<cssPx>}}``. Phase 2: dispatch a
     trusted pointer approach + click at that point via CDP. Phase 3 (await): resolve
-    ``window.__FRS_AWAIT`` and return its value. Bounded by EXECUTE_JS_TIMEOUT."""
+    ``window.__FRS_AWAIT`` and return its value. Setup is bounded by
+    EXECUTE_JS_TIMEOUT; completion is bounded by TRUSTED_CLICK_TIMEOUT."""
     # Keep the page in the foreground and treated as focused: an occluded/blurred
     # renderer is background-throttled, which starves in-page proof-of-work workers.
     for cmd, params in (('Page.bringToFront', {}),

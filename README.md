@@ -303,6 +303,7 @@ This works like `request.get`, with the addition of the postData parameter. Note
 | PROMETHEUS_ENABLED | false                  | Enable Prometheus exporter. See the Prometheus section below.                                                                            |
 | PROMETHEUS_PORT    | 8192                   | Listening port for Prometheus exporter. See the Prometheus section below.                                                                |
 | EXECUTE_JS_TIMEOUT | 20                     | Max seconds an `executeJs` snippet may run before it is abandoned.                                                                       |
+| BROWSER_WAIT_TIMEOUT | 1                    | Seconds to wait for the web browser to reach an expected page state on each attempt. Increase it on slow hosts or slow websites.         |
 
 Environment variables are set differently depending on the operating system. Some examples:
 

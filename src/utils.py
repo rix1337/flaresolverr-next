@@ -32,6 +32,10 @@ def get_config_disable_media() -> bool:
     return os.environ.get('DISABLE_MEDIA', 'false').lower() == 'true'
 
 
+def get_config_browser_wait_timeout() -> int:
+    return int(os.environ.get('BROWSER_WAIT_TIMEOUT', 1))
+
+
 def get_flaresolverr_version() -> str:
     global FLARESOLVERR_VERSION
     if FLARESOLVERR_VERSION is not None:
@@ -141,11 +145,11 @@ def get_webdriver(proxy: dict = None) -> WebDriver:
     # todo: this param shows a warning in chrome head-full
     options.add_argument('--disable-setuid-sandbox')
     options.add_argument('--disable-dev-shm-usage')
-    # flaresolverr-next: disable V8's Maglev mid-tier JIT. Since ~Chrome 138 Maglev
-    # runs some integer/typed-array-heavy web worker code (e.g. a filecrypt
-    # proof-of-work SHA-1 hashing loop driven via executeJs) ~40x slower than the
-    # TurboFan tier, so an in-page PoW worker never finishes in time. Chromium 136
-    # (no Maglev default) is unaffected; --no-maglev restores full speed on 138+.
+    # Disable V8's Maglev mid-tier JIT. Since ~Chrome 138, Maglev runs some
+    # integer/typed-array-heavy web worker code (e.g. an in-page proof-of-work
+    # hashing loop driven via executeJs) ~40x slower than the TurboFan tier, so
+    # such a worker may never finish within maxTimeout. Chromium 136 (Maglev off
+    # by default) is unaffected; --no-maglev restores full speed on 138+.
     options.add_argument('--js-flags=--no-maglev')
     # this option removes the zygote sandbox (it seems that the resolution is a bit faster)
     options.add_argument('--no-zygote')
