@@ -21,6 +21,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.wait import WebDriverWait
 
 import utils
+import requests
 from dtos import (STATUS_ERROR, STATUS_OK, ChallengeResolutionResultT,
                   ChallengeResolutionT, HealthResponse, IndexResponse,
                   V1RequestBase, V1ResponseBase)
@@ -40,6 +41,13 @@ try:
     TRUSTED_CLICK_TIMEOUT = int(os.environ.get('TRUSTED_CLICK_TIMEOUT', '100'))
 except ValueError:
     TRUSTED_CLICK_TIMEOUT = 100
+
+TWOCAPTCHA_API_KEY = (
+    os.environ.get('TWOCAPTCHA_API_KEY')
+    or os.environ.get('TWO_CAPTCHA_KEY')
+    or os.environ.get('CAPTCHA_SOLVER_KEY')
+    or ''
+).strip()
 
 ACCESS_DENIED_TITLES = [
     # Cloudflare
@@ -65,7 +73,9 @@ CHALLENGE_SELECTORS = [
     # Custom CloudFlare for EbookParadijs, Film-Paleis, MuziekFabriek and Puur-Hollands
     'td.info #js_info',
     # Fairlane / pararius.com
-    'div.vc div.text-box h2'
+    'div.vc div.text-box h2',
+    # Google reCAPTCHA
+    '.g-recaptcha', "iframe[src*='recaptcha/api2/anchor']", "iframe[src*='recaptcha/enterprise/anchor']"
 ]
 
 TURNSTILE_SELECTORS = [
@@ -330,7 +340,128 @@ def _resolve_challenge(req: V1RequestBase, method: str) -> ChallengeResolutionT:
                 logging.debug('A used instance of webdriver has been destroyed')
 
 
-def click_verify(driver: WebDriver, num_tabs: int = 1):
+def _solve_recaptcha_via_2captcha(api_key: str, sitekey: str, page_url: str) -> str | None:
+    try:
+        resp = requests.post(
+            "https://2captcha.com/in.php",
+            data={
+                "key": api_key,
+                "method": "userrecaptcha",
+                "googlekey": sitekey,
+                "pageurl": page_url,
+                "json": 1,
+            },
+            timeout=15,
+        )
+        data = resp.json()
+        if data.get("status") != 1:
+            logging.error(f"2Captcha submission failed: {data.get('request')}")
+            return None
+
+        request_id = data["request"]
+        for _ in range(18):
+            time.sleep(5)
+            poll_resp = requests.get(
+                "https://2captcha.com/res.php",
+                params={
+                    "key": api_key,
+                    "action": "get",
+                    "id": request_id,
+                    "json": 1,
+                },
+                timeout=10,
+            )
+            poll_data = poll_resp.json()
+            if poll_data.get("status") == 1:
+                return poll_data.get("request")
+            if poll_data.get("request") != "CAPCHA_NOT_READY":
+                logging.error(f"2Captcha polling error: {poll_data.get('request')}")
+                return None
+    except Exception as e:
+        logging.error(f"2Captcha solver exception: {e}")
+    return None
+
+
+def _submit_recaptcha_solution(driver: WebDriver, token: str):
+    driver.execute_script("""
+        var token = arguments[0];
+        var el = document.querySelector('[name="g-recaptcha-response"]') || document.getElementById('g-recaptcha-response');
+        if (el) el.value = token;
+        var widget = document.querySelector('.g-recaptcha, [data-callback]');
+        var cb = widget ? widget.getAttribute('data-callback') : null;
+        if (cb && typeof window[cb] === 'function') {
+            window[cb](token);
+        } else if (typeof window.onReturnCallback === 'function') {
+            window.onReturnCallback(token);
+        } else if (el && el.form) {
+            el.form.submit();
+        }
+    """, token)
+
+
+def _handle_recaptcha_challenge(driver: WebDriver, two_captcha_key: str = None):
+    anchors = driver.find_elements(
+        By.XPATH,
+        "//iframe[contains(@src, 'recaptcha/api2/anchor') or contains(@src, 'recaptcha/enterprise/anchor')]"
+    )
+    if not anchors:
+        return
+
+    logging.debug("Google reCAPTCHA checkbox iframe detected.")
+
+    # 1. Attempt clicking the checkbox directly
+    try:
+        driver.switch_to.frame(anchors[0])
+        checkbox = driver.find_element(By.ID, "recaptcha-anchor")
+        aria_checked = checkbox.get_attribute("aria-checked")
+        if aria_checked != "true":
+            logging.info("Clicking Google reCAPTCHA checkbox...")
+            checkbox.click()
+    except Exception as e:
+        logging.debug(f"Could not click reCAPTCHA anchor: {e}")
+    finally:
+        driver.switch_to.default_content()
+
+    time.sleep(2.5)
+
+    # 2. Check if the checkbox click alone resolved the challenge
+    token = driver.execute_script(
+        "var el = document.querySelector('[name=\"g-recaptcha-response\"]'); return el ? el.value : '';"
+    )
+    if token:
+        logging.info("Google reCAPTCHA solved via checkbox click.")
+        _submit_recaptcha_solution(driver, token)
+        return
+
+    # 3. Fallback to 2Captcha if configured
+    api_key = two_captcha_key or TWOCAPTCHA_API_KEY
+    if not api_key:
+        logging.debug("reCAPTCHA requires interactive solve, but no 2Captcha key is configured.")
+        return
+
+    sitekey = None
+    widgets = driver.find_elements(By.CSS_SELECTOR, "[data-sitekey]")
+    if widgets:
+        sitekey = widgets[0].get_attribute("data-sitekey")
+    if not sitekey:
+        src = anchors[0].get_attribute("src") or ""
+        import re
+        match = re.search(r"[?&]k=([a-zA-Z0-9_-]+)", src)
+        if match:
+            sitekey = match.group(1)
+
+    if not sitekey:
+        logging.warning("Could not extract reCAPTCHA sitekey for 2Captcha fallback.")
+        return
+
+    logging.info(f"Solving reCAPTCHA via 2Captcha fallback (sitekey={sitekey[:8]}...)...")
+    solved_token = _solve_recaptcha_via_2captcha(api_key, sitekey, driver.current_url)
+    if solved_token:
+        logging.info("2Captcha returned token. Submitting solution...")
+        _submit_recaptcha_solution(driver, solved_token)
+
+
+def click_verify(driver: WebDriver, num_tabs: int = 1, two_captcha_key: str = None):
     try:
         logging.debug("Try to find the Cloudflare verify checkbox...")
         actions = ActionChains(driver)
@@ -360,6 +491,14 @@ def click_verify(driver: WebDriver, num_tabs: int = 1):
             logging.debug("The Cloudflare 'Verify you are human' button found and clicked!")
     except Exception:
         logging.debug("The Cloudflare 'Verify you are human' button not found on the page.")
+
+    # Try Google reCAPTCHA v2 / Enterprise
+    try:
+        _handle_recaptcha_challenge(driver, two_captcha_key=two_captcha_key)
+    except Exception as e:
+        logging.debug(f"reCAPTCHA challenge handler exception: {e}")
+    finally:
+        driver.switch_to.default_content()
 
     time.sleep(2)
 
@@ -515,6 +654,10 @@ def _evil_logic_request(
     for selector in ACCESS_DENIED_SELECTORS:
         found_elements = driver.find_elements(By.CSS_SELECTOR, selector)
         if len(found_elements) > 0:
+            # Check if this page hosts a reCAPTCHA challenge rather than an actual access block
+            if driver.find_elements(By.CSS_SELECTOR, ".g-recaptcha, iframe[src*='recaptcha'], textarea[name='g-recaptcha-response']"):
+                logging.debug("Access denied selector matched, but reCAPTCHA challenge elements were found on page.")
+                continue
             raise Exception('Cloudflare has blocked this request. '
                             'Probably your IP is banned for this site, check in your web browser.')
 
@@ -557,7 +700,7 @@ def _evil_logic_request(
             except TimeoutException:
                 logging.debug("Timeout waiting for selector")
 
-                click_verify(driver)
+                click_verify(driver, two_captcha_key=req.twoCaptchaApiKey)
 
                 # update the html (cloudflare reloads the page every 5 s)
                 html_element = driver.find_element(By.TAG_NAME, "html")

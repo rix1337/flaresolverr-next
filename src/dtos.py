@@ -67,6 +67,8 @@ class V1RequestBase(object):
     # click at that point and awaits window.__FRS_AWAIT, returning its resolved value
     # as executeJsResult. Used for pointer-trust captchas (e.g. Filecrypt PoW).
     trustedClick: bool = None
+    # flaresolverr-next: optional 2captcha API key for reCAPTCHA challenge fallback
+    twoCaptchaApiKey: str = None
 
     def __init__(self, _dict):
         self.__dict__.update(_dict)
