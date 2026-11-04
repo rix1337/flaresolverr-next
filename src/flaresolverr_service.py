@@ -359,7 +359,7 @@ def _solve_recaptcha_via_2captcha(api_key: str, sitekey: str, page_url: str) -> 
             return None
 
         request_id = data["request"]
-        for _ in range(18):
+        for _ in range(36):
             time.sleep(5)
             poll_resp = requests.get(
                 "https://2captcha.com/res.php",
