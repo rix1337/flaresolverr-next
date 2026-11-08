@@ -8,6 +8,7 @@ import time
 from datetime import timedelta
 from html import escape
 from random import uniform
+from threading import BoundedSemaphore
 from urllib.parse import unquote, quote
 
 from func_timeout import FunctionTimedOut, func_timeout
@@ -22,6 +23,7 @@ from selenium.webdriver.support.wait import WebDriverWait
 
 import utils
 import requests
+from turnstile import locate_turnstile
 from dtos import (STATUS_ERROR, STATUS_OK, ChallengeResolutionResultT,
                   ChallengeResolutionT, HealthResponse, IndexResponse,
                   V1RequestBase, V1ResponseBase)
@@ -83,6 +85,11 @@ TURNSTILE_SELECTORS = [
 ]
 
 SESSIONS_STORAGE = SessionsStorage()
+
+MAX_CONCURRENT_SOLVES = int(os.environ.get('MAX_CONCURRENT_SOLVES', '2'))
+if MAX_CONCURRENT_SOLVES < 1:
+    raise ValueError('MAX_CONCURRENT_SOLVES must be at least 1')
+_SOLVE_SLOTS = BoundedSemaphore(MAX_CONCURRENT_SOLVES)
 
 
 def test_browser_installation():
@@ -272,6 +279,13 @@ def _cmd_sessions_destroy(req: V1RequestBase) -> V1ResponseBase:
 
 
 def _resolve_challenge(req: V1RequestBase, method: str) -> ChallengeResolutionT:
+    # Queue before launching or navigating a browser. Queued requests retain
+    # their full challenge timeout instead of competing for renderer CPU.
+    with _SOLVE_SLOTS:
+        return _resolve_challenge_in_browser(req, method)
+
+
+def _resolve_challenge_in_browser(req: V1RequestBase, method: str) -> ChallengeResolutionT:
     timeout = int(req.maxTimeout) / 1000
     driver = None
     script_identifier = None
@@ -462,6 +476,19 @@ def _handle_recaptcha_challenge(driver: WebDriver, two_captcha_key: str = None):
 
 
 def click_verify(driver: WebDriver, num_tabs: int = 1, two_captcha_key: str = None):
+    if num_tabs == 1 and driver.title in CHALLENGE_TITLES:
+        try:
+            turnstile = locate_turnstile(driver)
+            if turnstile is not None:
+                if turnstile is False:
+                    logging.debug("Turnstile widget is pending or already resolved")
+                    return
+                _trusted_pointer_gesture(driver, *turnstile)
+                time.sleep(0.25)
+                return
+        except Exception as e:
+            logging.debug(f"Turnstile CDP lookup failed; using legacy verify path: {e}")
+
     try:
         logging.debug("Try to find the Cloudflare verify checkbox...")
         actions = ActionChains(driver)

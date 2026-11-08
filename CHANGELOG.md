@@ -1,5 +1,9 @@
 # Changelog
 
+## v3.5.4 (2026/11/08)
+* Target the Cloudflare checkbox directly to avoid challenge timeouts when concurrent requests change widget loading and keyboard focus.
+* Limit active page solves to two by default, with `MAX_CONCURRENT_SOLVES` available to tune capacity. Queued requests keep their full challenge timeout.
+
 ## v3.5.2 (2026/09/12)
 * Update build_package.py
 * Disable breaking Local Network Access Checks popup
