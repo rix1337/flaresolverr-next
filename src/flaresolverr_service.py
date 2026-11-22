@@ -12,6 +12,7 @@ from threading import BoundedSemaphore
 from urllib.parse import unquote, quote
 
 from func_timeout import FunctionTimedOut, func_timeout
+from error_log import record_http_error
 from selenium.common import TimeoutException
 from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.common.by import By
@@ -159,6 +160,8 @@ def controller_v1_endpoint(req: V1RequestBase) -> V1ResponseBase:
         res.status = STATUS_ERROR
         res.message = "Error: " + str(e)
         logging.error(res.message)
+        record_http_error(utils.get_flaresolverr_version(), 'command', e, req.cmd,
+                          int(time.time() * 1000) - start_ts)
 
     res.startTimestamp = start_ts
     res.endTimestamp = int(time.time() * 1000)

@@ -315,6 +315,7 @@ This works like `request.get`, with the addition of the postData parameter. Note
 | ------------------ | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | LOG_LEVEL          | info                   | Verbosity of the logging. Use `LOG_LEVEL=debug` for more information.                                                                    |
 | LOG_FILE           | none                   | Path to capture log to file. Example: `/config/flaresolverr.log`.                                                                         |
+| ERROR_LOG_FILE    | flaresolverr-errors.log | Rotating HTTP 500 log. In Docker, the default is `/config/flaresolverr-errors.log`. Mount `/config` to keep logs across container replacements. |
 | LOG_HTML           | false                  | Only for debugging. If `true` all HTML that passes through the proxy will be logged to the console in `debug` level.                     |
 | PROXY_URL          | none                   | URL for proxy. Will be overwritten by `request` or `sessions` proxy, if used. Example: `http://127.0.0.1:8080`.                          |
 | PROXY_USERNAME     | none                   | Username for proxy. Will be overwritten by `request` or `sessions` proxy, if used. Example: `testuser`.                                  |

@@ -10,6 +10,7 @@ from bottle_plugins.error_plugin import error_plugin
 from bottle_plugins.logger_plugin import logger_plugin
 from bottle_plugins import prometheus_plugin
 from dtos import V1RequestBase
+from error_log import configure_error_log
 import flaresolverr_service
 import utils
 
@@ -120,6 +121,8 @@ if __name__ == "__main__":
                 logging.StreamHandler(sys.stdout)
             ]
         )
+
+    configure_error_log()
 
     # disable warning traces from urllib3
     logging.getLogger('urllib3').setLevel(logging.ERROR)
